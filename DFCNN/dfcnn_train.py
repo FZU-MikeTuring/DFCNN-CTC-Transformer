@@ -95,10 +95,13 @@ def split_targets(labels, label_lengths):
     return refs
 
 
-def ctc_greedy_decode(pred_ids, blank_index):
+def ctc_greedy_decode(pred_ids, blank_index, input_lengths=None):
     results = []
 
-    for row in pred_ids:
+    for i, row in enumerate(pred_ids):
+        if input_lengths is not None:
+            row = row[: int(input_lengths[i])]
+
         prev = None
         decoded = []
 
@@ -210,7 +213,11 @@ def make_acoustic_batch(loader, start, end, vocab):
 def decode_batch(log_probs, batch_inputs, blank_index, vocab_size):
     pred_ids = log_probs.argmax(dim=-1).permute(1, 0).cpu().numpy()
 
-    preds = ctc_greedy_decode(pred_ids, blank_index)
+    preds = ctc_greedy_decode(
+        pred_ids,
+        blank_index,
+        input_lengths=batch_inputs["input_length"],
+    )
     refs = split_targets(
         batch_inputs["the_labels"],
         batch_inputs["label_length"],

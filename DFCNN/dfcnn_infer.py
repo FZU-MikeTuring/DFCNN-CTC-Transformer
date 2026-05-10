@@ -21,13 +21,15 @@ def pad_to_multiple_of_8(fbank, freq=200):
     target_T = (T // 8) * 8 + 8
     pad = np.zeros((target_T, freq), dtype=float)
     pad[:T, :] = fbank
-    return pad, T
+    return pad, target_T // 8
 
 
-def ctc_greedy_decode(log_probs, acoustic_vocab, blank_index=None):
+def ctc_greedy_decode(log_probs, acoustic_vocab, blank_index=None, input_length=None):
     # log_probs: Tensor [T, C] or [1, T, C]
     if log_probs.dim() == 3:
         log_probs = log_probs[0]
+    if input_length is not None:
+        log_probs = log_probs[:input_length]
     ids = torch.argmax(log_probs, dim=-1).cpu().numpy().tolist()
     if blank_index is None:
         blank_index = len(acoustic_vocab) - 1
@@ -70,7 +72,7 @@ def main():
 
     # compute FBANK
     fbank = compute_fbank(args.wav)
-    pad_fbank, orig_T = pad_to_multiple_of_8(fbank, freq=fbank.shape[1])
+    pad_fbank, input_length = pad_to_multiple_of_8(fbank, freq=fbank.shape[1])
 
     # prepare input: [B, 1, T, F]
     np_input = np.zeros((1, pad_fbank.shape[0], pad_fbank.shape[1], 1), dtype=float)
@@ -81,7 +83,12 @@ def main():
         log_probs = model(inputs)  # [B, T', C]
 
     blank_index = len(acoustic_vocab) - 1
-    tokens = ctc_greedy_decode(log_probs, acoustic_vocab, blank_index=blank_index)
+    tokens = ctc_greedy_decode(
+        log_probs,
+        acoustic_vocab,
+        blank_index=blank_index,
+        input_length=input_length,
+    )
 
     print("===== Inference result (pinyin tokens) =====")
     print(" ".join(tokens))
