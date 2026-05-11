@@ -19,6 +19,7 @@ if DFCNN_DIR not in sys.path:
 
 os.chdir(REPO_ROOT)
 
+from ctc_decoder import ctc_beam_decode_ids, ctc_greedy_decode_ids
 from data_process import get_data
 from dfcnn_model import DFCNN_CTC
 
@@ -93,29 +94,6 @@ def split_targets(labels, label_lengths):
         refs.append([int(x) for x in labels[i, :length].tolist()])
 
     return refs
-
-
-def ctc_greedy_decode(pred_ids, blank_index, input_lengths=None):
-    results = []
-
-    for i, row in enumerate(pred_ids):
-        if input_lengths is not None:
-            row = row[: int(input_lengths[i])]
-
-        prev = None
-        decoded = []
-
-        for idx in row:
-            idx = int(idx)
-
-            if idx != prev and idx != blank_index:
-                decoded.append(idx)
-
-            prev = idx
-
-        results.append(decoded)
-
-    return results
 
 
 def edit_distance(pred, ref):
@@ -210,14 +188,29 @@ def make_acoustic_batch(loader, start, end, vocab):
     }
 
 
-def decode_batch(log_probs, batch_inputs, blank_index, vocab_size):
-    pred_ids = log_probs.argmax(dim=-1).permute(1, 0).cpu().numpy()
+def decode_batch(
+    log_probs,
+    batch_inputs,
+    blank_index,
+    vocab_size,
+    decode_method="greedy",
+    beam_size=10,
+):
+    if decode_method == "beam":
+        preds = ctc_beam_decode_ids(
+            log_probs,
+            blank_index=blank_index,
+            input_lengths=batch_inputs["input_length"],
+            beam_size=beam_size,
+        )
+    else:
+        pred_ids = log_probs.argmax(dim=-1).permute(1, 0).cpu().numpy()
+        preds = ctc_greedy_decode_ids(
+            pred_ids,
+            blank_index,
+            input_lengths=batch_inputs["input_length"],
+        )
 
-    preds = ctc_greedy_decode(
-        pred_ids,
-        blank_index,
-        input_lengths=batch_inputs["input_length"],
-    )
     refs = split_targets(
         batch_inputs["the_labels"],
         batch_inputs["label_length"],
@@ -228,7 +221,16 @@ def decode_batch(log_probs, batch_inputs, blank_index, vocab_size):
     return preds, refs
 
 
-def compute_metrics(model, loader, criterion, blank_index, vocab_size, device):
+def compute_metrics(
+    model,
+    loader,
+    criterion,
+    blank_index,
+    vocab_size,
+    device,
+    decode_method="greedy",
+    beam_size=10,
+):
     model.eval()
 
     total_loss = 0.0
@@ -280,6 +282,8 @@ def compute_metrics(model, loader, criterion, blank_index, vocab_size, device):
                 batch_inputs,
                 blank_index,
                 vocab_size,
+                decode_method=decode_method,
+                beam_size=beam_size,
             )
 
             all_preds.extend(preds)
@@ -339,6 +343,8 @@ def main():
     parser.add_argument("--log_interval", type=int, default=10)
     parser.add_argument("--save_model", type=str, default="dfcnn_ctc_best.pt")
     parser.add_argument("--save_fig", type=str, default="dfcnn_ctc_history.png")
+    parser.add_argument("--decode_method", choices=["greedy", "beam"], default="greedy")
+    parser.add_argument("--beam_size", type=int, default=10)
 
     args = parser.parse_args()
 
@@ -387,6 +393,8 @@ def main():
     print(f"Val samples: {len(val_loader.wav_lst)}")
     print(f"Acoustic vocab size: {vocab_size}")
     print(f"Blank index: {blank_index}")
+    print(f"Decode method: {args.decode_method}")
+    print(f"Beam size: {args.beam_size}")
     print(f"FBANK dir: {FBANK_DIR}")
     print("-" * 100)
 
@@ -467,6 +475,8 @@ def main():
             blank_index=blank_index,
             vocab_size=vocab_size,
             device=device,
+            decode_method=args.decode_method,
+            beam_size=args.beam_size,
         )
 
         val_loss, val_wer, val_acc = compute_metrics(
@@ -476,6 +486,8 @@ def main():
             blank_index=blank_index,
             vocab_size=vocab_size,
             device=device,
+            decode_method=args.decode_method,
+            beam_size=args.beam_size,
         )
 
         history["train_loss"].append(train_loss)

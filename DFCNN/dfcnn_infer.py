@@ -13,6 +13,7 @@ if DFCNN_DIR not in sys.path:
 os.chdir(REPO_ROOT)
 
 from data_process import compute_fbank
+from ctc_decoder import ctc_beam_decode_ids, ctc_greedy_decode_ids
 from dfcnn_model import DFCNN_CTC
 
 
@@ -24,27 +25,30 @@ def pad_to_multiple_of_8(fbank, freq=200):
     return pad, target_T // 8
 
 
-def ctc_greedy_decode(log_probs, acoustic_vocab, blank_index=None, input_length=None):
-    # log_probs: Tensor [T, C] or [1, T, C]
+def decode_tokens(log_probs, acoustic_vocab, blank_index, input_length, method, beam_size):
     if log_probs.dim() == 3:
-        log_probs = log_probs[0]
-    if input_length is not None:
-        log_probs = log_probs[:input_length]
-    ids = torch.argmax(log_probs, dim=-1).cpu().numpy().tolist()
-    if blank_index is None:
-        blank_index = len(acoustic_vocab) - 1
+        batch_log_probs = log_probs.permute(1, 0, 2)
+    else:
+        batch_log_probs = log_probs.unsqueeze(1)
 
-    prev = None
-    output = []
-    for i in ids:
-        if i == prev:
-            prev = i
-            continue
-        if i != blank_index:
-            output.append(acoustic_vocab[i])
-        prev = i
+    input_lengths = [int(input_length)]
 
-    return output
+    if method == "beam":
+        pred_ids = ctc_beam_decode_ids(
+            batch_log_probs,
+            blank_index=blank_index,
+            input_lengths=input_lengths,
+            beam_size=beam_size,
+        )[0]
+    else:
+        greedy_ids = torch.argmax(batch_log_probs, dim=-1).cpu().numpy()
+        pred_ids = ctc_greedy_decode_ids(
+            greedy_ids,
+            blank_index=blank_index,
+            input_lengths=input_lengths,
+        )[0]
+
+    return [acoustic_vocab[idx] for idx in pred_ids]
 
 
 def load_checkpoint(path, device):
@@ -57,6 +61,8 @@ def main():
     parser.add_argument("--ckpt", required=True, help="Path to checkpoint (pt file)")
     parser.add_argument("--wav", required=True, help="Path to wav file to infer")
     parser.add_argument("--device", default=None, help="cpu or cuda")
+    parser.add_argument("--decode_method", choices=["greedy", "beam"], default="greedy")
+    parser.add_argument("--beam_size", type=int, default=10)
     args = parser.parse_args()
 
     device = torch.device(args.device if args.device else ("cuda" if torch.cuda.is_available() else "cpu"))
@@ -83,11 +89,13 @@ def main():
         log_probs = model(inputs)  # [B, T', C]
 
     blank_index = len(acoustic_vocab) - 1
-    tokens = ctc_greedy_decode(
+    tokens = decode_tokens(
         log_probs,
         acoustic_vocab,
         blank_index=blank_index,
-        input_length=input_length,
+        input_length=int(input_length),
+        method=args.decode_method,
+        beam_size=args.beam_size,
     )
 
     print("===== Inference result (pinyin tokens) =====")
